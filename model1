@@ -1,0 +1,143 @@
+# %%
+from os import write
+from numpy.matrixlib.defmatrix import matrix
+import pandas as pd
+import re
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, Conv1D, MaxPooling1D, Input
+from sklearn.model_selection import KFold, train_test_split
+from scipy.stats import pearsonr
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.callbacks import EarlyStopping,ModelCheckpoint
+from tensorflow.python.keras.models import Model
+import matplotlib.pyplot as plt
+#%%
+import os 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+#%%
+def One_hot(X):
+    sample = []
+    for i in X:
+        value = np.zeros((10000, 4), dtype='float32')
+        for index, base in enumerate(i):
+            if re.match('A|a', base):
+                value[index, 0] = 1
+            if re.match('C|c', base):
+                value[index, 1] = 1
+            if re.match('G|g', base):
+                value[index, 2] = 1
+            if re.match('T|t', base):
+                value[index, 3] = 1
+        sample.append(value)
+    return np.array(sample)
+
+#%%
+# with open('/home/yxge/SURE/pro_chr.csv') as f:
+#     x = f.readlines()
+#     X=One_hot(x)
+# np.save('/home/yxge/SURE/X.npy', X)
+#%%
+def Model(filter_num,filter_len):
+    model = Sequential()
+    model.add(
+        Conv1D(filters=int(filter_num),  #16 32 64 
+               kernel_size=int(filter_len), #5-21-2
+               padding='same',
+               activation='relu',
+               input_shape=(10000, 4)))
+    model.add(MaxPooling1D(pool_size=3))
+    model.add(Flatten())
+    model.add(Dense(100, activation='relu'))
+    model.add(Dropout(0.3))
+    model.add(Dense(50, activation='relu'))
+    model.add(Dropout(0.3))
+    model.add(Dense(1))
+    return model
+
+#%%
+# pro = pd.read_csv('/home/yxge/SURE/pro_10k.csv', sep='\t')
+# pro_chr = pro['1']
+# pro_chr.to_csv('/home/yxge/SURE/pro_chr.csv', header = False, index = False)
+
+#%%
+# with open('/home/yxge/SURE/pro_chr.csv') as f:
+#     x = f.readlines()
+#     X=One_hot(x)
+# np.save('/home/yxge/SURE/X.npy', X)
+
+#%%
+# import seaborn as sns
+# pro_lable = pd.read_csv('/home/yxge/SURE/pro_lable.csv',sep = '\t')
+# Y = np.log2(pro_lable['SuRE.score']+1)
+# Y.to_csv('/home/yxge/SURE/Y.csv', header = False, index = False)
+
+X = np.load('/home/yxge/SURE/X.npy')
+Y = np.array(pd.read_csv('/home/yxge/SURE/Y.csv', sep='\t', header=None))
+
+for rep in range(1):
+    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,test_size=0.2,random_state=(rep+1)**2)
+    best_num = None
+    best_len = None
+    best_pccs = float('-inf')
+    for filter_num in [16]:
+        for filter_len in range(5,9,2):
+            kfold = KFold(n_splits=10, shuffle=True, random_state=2020)
+            all_evaluater = []
+            
+            y_pred_all = []
+            y_test_all = []
+            for train_index, test_index in kfold.split(X_train, Y_train):
+                x_train, y_train = X_train[train_index], Y_train[train_index]
+                x_valid, y_valid = X_train[test_index], Y_train[test_index]
+                model = Model(filter_num,filter_len)
+                sgd = SGD(lr=0.001, decay=1e-5, momentum=0.9, nesterov=True)
+                model.compile(loss='mse',
+                            optimizer=sgd,
+                            metrics=['mse'])
+                early_stopping =EarlyStopping(monitor='val_loss', patience=5)
+                model.fit(x_train,
+                        y_train,
+                        batch_size=128,
+                        epochs=100,
+                        shuffle=True,
+                        validation_split=0.1,
+                        callbacks=[early_stopping])
+                one_fold_pred = model.predict(x_valid)
+                y_pred_all.extend(list(one_fold_pred.ravel()))
+                y_test_all.extend(list(y_valid.ravel()))
+            # plt.scatter(y_test_all,y_pred_all)
+            pccs = pearsonr(y_pred_all, y_test_all)[0]
+            all_evaluater.append(pccs)
+        if max(all_evaluater) > best_pccs :
+            best_pccs = max(all_evaluater)
+            best_num = filter_num
+            best_len = filter_len
+
+    model = Model(best_num,best_len)
+    sgd = SGD(lr=0.001, decay=1e-5, momentum=0.9, nesterov=True)
+    model.compile(loss='mse',
+                optimizer=sgd,
+                metrics=['mse'])
+    early_stopping =EarlyStopping(monitor='val_loss', patience=5)
+
+
+    model.fit(X_train,
+            Y_train,
+            batch_size=128,
+            epochs=100,
+            shuffle=True,
+            validation_split=0.1,
+            callbacks=[early_stopping])
+    model.save('cnn_model.h5')
+    pred_y_test =list( model.predict(X_test).flatten())
+    y_test = list(Y_test.flatten())
+    plt.scatter(y_test,pred_y_test)
+    plt.savefig('scatter.png')
+    final_pccs = pearsonr(pred_y_test, y_test)[0]
+
+with open('final_result.txt','a') as file:
+    file.write("the best_filter_num is {},\n\
+    the best_filter_len is {},\n the pccs in 10-fold is {},\n\
+        the pccs in final model is {}".format(best_num,best_len,best_pccs,final_pccs))
