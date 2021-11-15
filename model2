@@ -1,0 +1,138 @@
+
+
+#%%
+import os
+
+from tensorflow.python.keras.backend import relu 
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+# %%
+from os import write
+from numpy.matrixlib.defmatrix import matrix
+import pandas as pd
+import re
+import numpy as np
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Input, Dense, Dropout, Activation, Flatten, Conv1D, MaxPooling1D, Input
+from sklearn.model_selection import KFold, train_test_split
+from scipy.stats import pearsonr
+from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.callbacks import EarlyStopping,ModelCheckpoint
+from tensorflow.python.keras.models import Model
+import matplotlib.pyplot as plt
+from hyperopt import fmin, tpe, rand, anneal, hp, STATUS_OK, STATUS_FAIL, Trials, mix, partial, space_eval
+#%%
+params = {
+    'batchsize' : 2**hp.quniform('batchsize', 2, 4, 1),
+    'filterLenConv1' : hp.quniform('filterLenConv1', 3, 21, 1),
+    'filterLenConv2' : hp.quniform('filterLenConv2', 3, 9, 1),
+    'filterLenConv3' : hp.quniform('filterLenConv3', 3, 9, 1),
+    'filterLenConv4' : hp.quniform('filterLenConv4', 3, 9, 1),
+    'MaxPooling1' : hp.quniform('MaxPooling1', 2, 3, 1),
+    'MaxPooling2' : hp.quniform('MaxPooling2', 2 ,3, 1),
+    'MaxPooling3' : hp.quniform('MaxPooling3', 2 ,3, 1),
+    'MaxPooling4' : hp.quniform('MaxPooling4', 2 ,3, 1),
+    'learningRate' : hp.uniform('learningRate', 0, 0.01)
+}
+#%%
+def myModel(params):
+    inputs = Input(shape=(10000,4))
+    
+    x = Conv1D(filters=512,  #16 32 64 
+               kernel_size=int(params['filterLenConv1']), #5-21-2
+               padding='same',
+               activation='relu',
+               dilation_rate=1,)(inputs)
+    x = MaxPooling1D(pool_size=int(params['MaxPooling1']))(x)
+
+    x = Conv1D(filters=256,
+               kernel_size=int(params['filterLenConv2']),
+               padding='same',
+               dilation_rate=2,
+               activation='relu')(x)
+    x = MaxPooling1D(pool_size=int(params['MaxPooling2']))(x)
+
+    x = Conv1D(filters=128,
+              kernel_size=int(params['filterLenConv3']),
+              padding='same',
+              dilation_rate=5,
+              activation='relu')(x)
+    x = MaxPooling1D(pool_size=int(params['MaxPooling3']))(x)
+
+    x = Conv1D(filters=64,
+               kernel_size=int(params['filterLenConv4']),
+               padding='same',
+               dilation_rate=1,
+               activation='relu')(x)
+    x = MaxPooling1D(pool_size=int(params['MaxPooling4']))(x) 
+
+    x = Flatten()(x)
+    x = Dropout(0.3)(x)
+    x = Dense(3, activation='relu')(x)
+    outputs = Dense(1)(x)
+
+    model = Model(inputs, outputs)    
+    return model
+
+#%%
+X = np.load('/home/yxge/SURE/X.npy')
+Y = np.array(pd.read_csv('/home/yxge/SURE/Y.csv', sep='\t', header=None))
+X_train, X_test, Y_train, Y_test = train_test_split(X,Y,test_size=0.2,random_state=2021)
+def objective(params):
+    pcc = 0
+    # all_evaluater = []
+    kfold = KFold(n_splits=10, shuffle=True, random_state=2021)
+    y_pred_all = []
+    y_test_all = []
+    for train_index, test_index in kfold.split(X_train, Y_train):
+        x_train, y_train = X_train[train_index], Y_train[train_index]
+        x_test, y_test = X_train[test_index], Y_train[test_index]
+        adam = Adam(lr=params['learningRate'])
+        model = myModel(params)
+        mse = 'mean_squared_error'
+        model.compile(loss=mse,
+                    optimizer=adam,
+                    metrics=['mse'])
+        early_stopping =EarlyStopping(monitor='val_loss', patience=5)
+
+        model.fit(x_train,
+                y_train,
+                batch_size=int(params['batchsize']),
+                epochs=100,
+                shuffle=True,
+                validation_split=0.1,
+                callbacks=[early_stopping])
+        one_fold_pred = model.predict(x_test)
+        y_pred_all.extend(list(one_fold_pred.ravel()))
+        y_test_all.extend(list(y_test.ravel()))
+    pcc = pearsonr(y_pred_all, y_test_all)[0]
+    # all_evaluater.append(pccs)
+    # if max(all_evaluater) > best_pccs :
+    #     best_pccs = max(all_evaluater)
+    return {'loss' : -pcc, 'status': STATUS_OK }
+
+best = fmin(objective, space=params, max_evals = 5, algo = anneal.suggest)
+print('best:', best)
+
+params = best
+model = myModel(params)
+sgd = SGD(lr=params['learningRate'], decay=1e-5, momentum=0.9, nesterov=True)
+model.compile(loss='mse',
+            optimizer=sgd,
+            metrics=['mse'])
+early_stopping =EarlyStopping(monitor='val_loss', patience=5)
+model.fit(X_train,
+         Y_train,
+         batch_size=int(params['batchsize']),
+         epochs=100,
+         shuffle=True,
+         validation_split=0.1,
+         callbacks=[early_stopping])
+model.save('cnn_model_1.h5')
+pred_y_test = list( model.predict(X_test).flatten())
+y_test = list(Y_test.flatten())
+plt.scatter(y_test,pred_y_test)
+plt.savefig('scatter_1.png')
+final_pccs = pearsonr(pred_y_test, y_test)[0]
+
+
